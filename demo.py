@@ -3,65 +3,59 @@
 import argparse
 import json
 from experiments.config import load_and_apply_config # config.py의 load_config 함수 임포트
+import os
 
-def _main():
-    # 1. ArgumentParser 생성
-    parser = argparse.ArgumentParser(
-        description="Run robot environment demos with dynamic configurations.",
-        formatter_class=argparse.RawTextHelpFormatter
-    )
+from tqdm import tqdm
+import datetime, copy
+import numpy as np
+import pickle as pkl
+from pynput import keyboard
 
-    # --- 필수 인자 ---
-    parser.add_argument("--env_name", type=str, required=True, help="Name of the environment config file to load (e.g., 'cleanup_table').")
-    parser.add_argument("--arm_type", type=str, default="right", choices=['right', 'left', 'dual'], help="Type of the robot arm setup.")
-
-    # --- 덮어쓸 파라미터 ---
-    # 새로운 파라미터는 여기에 추가!
-    # 규칙: --<섹션>--<키> 형태로 인자 추가
-    # dest='env.max_episode_length' 처럼 .을 사용해 딕셔너리 경로 지정
-    parser.add_argument("--env--max_episode_length", type=int, dest='env.max_episode_length', help="Override max_episode_length in env config.")
-    parser.add_argument("--env--action_scale", type=float, nargs='+', dest='env.action_scale', help="Override action_scale (e.g., --env--action_scale 0.01 0.01 1.0).")
-    parser.add_argument("--env--robot_prefix", type=str, dest='env.robot_prefix', help="Override robot_prefix in env config.")
-    parser.add_argument("--train--discount", type=float, dest='train.discount', help="Override discount factor in train config.")
-
-    args = parser.parse_args()
-
-    # 2. 커맨드 라인에서 입력된 값만 모아서 덮어쓰기용 딕셔너리 생성
-    cli_overrides = {key: value for key, value in vars(args).items()
-                     if value is not None and '.' in key}
-
-    print("="*50)
-    print(f"Starting demo for env='{args.env_name}', arm='{args.arm_type}'")
-    if cli_overrides:
-        print("Received command-line overrides:", cli_overrides)
-    print("="*50 + "\n")
+skip_key = False
+save_key = False
+def on_press(key):
+    global skip_key
+    global save_key
+    try:
+        if key.char == 's':
+            skip_key = True
+        elif key.char == 'p':
+            save_key = True
+    except AttributeError:
+        pass
 
 
-    # 3. load_config에 overrides 딕셔너리 전달
-    env, final_config = load_config(
-        env_name=args.env_name,
-        arm_type=args.arm_type,
-        overrides=cli_overrides
-    )
+listener = keyboard.Listener(
+    on_press=on_press)
+listener.start()
 
-    print("\n" + "="*50)
-    print("✅ Final Config after all overrides:")
-    # 보기 쉽게 JSON 형태로 최종 설정 출력
-    print(json.dumps(final_config, indent=2, ensure_ascii=False))
-    print("="*50)
 
-    # ... 이후 환경을 사용하는 로직 ...
-    print("\n🎉 Demo setup complete. You can now use the 'env' object.")
-    # env.reset()
-    # for _ in range(10):
-    #     action = env.action_space.sample()
-    #     obs, reward, done, info = env.step(action)
+
+def save_traj(transitions, success_needed, _name):
+
+    _date = datetime.datetime.now().strftime("%Y-%m-%d")
+
+    if not os.path.exists(f"./demos/{_name}"):
+        os.makedirs(f"./demos/{_name}")
+        
+    if not os.path.exists(f"./demos/{_name}/{_date}"):
+        os.makedirs(f"./demos/{_name}/{_date}")
+
+    uuid = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    file_name = f"./demos/{_name}/{_date}/{_name}_{success_needed}_demos_{uuid}.pkl"
+    with open(file_name, "wb") as f:
+        pkl.dump(transitions, f)
+        print(f"saved {success_needed} demos to {file_name}")
+
+
+
 
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="Load environment from YAML configs.")
     parser.add_argument("--env_name", type=str, required=True, help="e.g., 'cleanup_table'")
     parser.add_argument("--arm_type", type=str, default="right", choices=['right', 'left', 'dual'])
+    parser.add_argument("--success", type=int, default=10)
     parser.add_argument("--fake_env", action="store_true", help="Run without physical robot.")
     
     # ✨ action_scale과 hz를 위한 인자 추가 ✨
@@ -89,7 +83,86 @@ def main():
 
 
     print(f"\n✅ Environment for '{args.env_name}' with '{args.arm_type}' arm(s) created successfully!")
-    print(train_config_instance)
+    obs, info = env.reset()
+    print("Reset done")
+    transitions = []
+    success_count = 0
+    success_needed = args.success
+    pbar = tqdm(total=success_needed)
+    trajectory = []
+    returns = 0
     
+    while success_count < success_needed:
+        actions = np.zeros(env.action_space.sample().shape) 
+        next_obs, rew, done, truncated, info = env.step(actions)
+        returns += rew
+        
+        if "intervene_action" in info:
+            actions = info["intervene_action"]
+        transition = copy.deepcopy(
+            dict(
+                observations=obs,
+                actions=actions,
+                next_observations=next_obs,
+                rewards=rew,
+                masks=1.0 - done,
+                dones=done,
+                infos=info,
+            )
+        )
+        trajectory.append(transition)
+        
+        pbar.set_description(f"Return: {returns}")
+
+        obs = next_obs
+
+
+        global save_key 
+        global skip_key
+
+        if save_key:
+            save_key=False
+            print("save and quit")
+            save_traj(transitions, success_count, args.env_name)
+            exit()
+
+
+
+        if done:
+            # skip_key = False
+
+            if hasattr(env, "stopwatch"):
+                import pickle
+                with open("timings.pkl", "wb") as f:
+                    pickle.dump(env.stopwatch.elapsed, f)
+            # if info["succeed"]:
+
+            if skip_key:
+                skip_key=False
+                print('skip')
+                trajectory = []
+                returns = 0
+                obs, info = env.reset()
+                continue
+            if len(trajectory)<=10:
+                print("[Error] episode length!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! : ", len(trajectory))
+                trajectory = []
+                returns = 0
+                obs, info = env.reset()
+                continue
+            for transition in trajectory:
+                transitions.append(copy.deepcopy(transition))
+            success_count += 1
+            print("[Save]: episode length : ", len(trajectory))
+            pbar.update(1)
+            trajectory = []
+            returns = 0
+            obs, info = env.reset()
+            
+
+    save_traj(transitions, success_needed, args.env_name)
+
+    
+
 if __name__ == "__main__":
     main()

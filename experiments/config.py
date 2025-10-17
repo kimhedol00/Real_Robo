@@ -61,6 +61,36 @@ from experiments.wrapper import Rb3UsbPickupInsertionEnv, DualRb3ExampleEnv
 from serl_launcher.networks.reward_classifier import load_classifier_func
 
 
+from pynput import keyboard
+success_triggered = False
+
+def trigger_success():
+    global success_triggered
+    success_triggered = True
+
+def on_press(key):
+    try:
+        if key == keyboard.Key.space:
+            trigger_success()
+        elif key.char == 's':
+            trigger_success()
+            # print("Skip triggered!")
+
+
+    except AttributeError:
+        pass
+
+
+def start_keyboard_listener():
+    listener = keyboard.Listener(on_press=on_press)
+    listener.start()
+    print('start listener')
+
+start_keyboard_listener()
+
+
+
+
 class DefaultTrainingConfig:
     """Default training configuration."""
 
@@ -244,7 +274,7 @@ class LeftEnvConfig(DefaultEnvConfig):
 
 class RightEnvConfig(DefaultEnvConfig):
     
-    # From default.yaml or dual_default.yaml
+    # From base.yaml or dual_base.yaml
     CAMERAS = {
         "head_cam": {
             "serial_number": "213522254901",
@@ -255,11 +285,17 @@ class RightEnvConfig(DefaultEnvConfig):
             "cam_id": "usb-0:5.1.3:1.0",
             "dim": (640, 480),
             "strict_device_filter": True,
+        },
+        "front_cam": {
+            "cam_id": "usb-0:5.1.4:1.0",
+            "dim": (640, 480),
+            "strict_device_filter": True,
         }
     }
     IMAGE_CROP = {
         "head_cam": lambda img: np.rot90(img[:, :], 2),
         "wrist_cam": lambda img: np.rot90(img, 2),
+        "front_cam": lambda img: np.rot90(img, 2),
     }
 
     
@@ -284,8 +320,8 @@ class RightEnvConfig(DefaultEnvConfig):
 
 class TrainConfig(DefaultTrainingConfig):
     # from default.yaml or dual_default.yaml
-    image_keys = ["head_cam", "wrist_cam"]
-    classifier_keys = ["head_cam", "wrist_cam"]
+    image_keys = ["head_cam", "wrist_cam", "front_cam"]
+    classifier_keys = ["head_cam", "wrist_cam", "front_cam"]
     proprio_keys = [
         'gripper_pose',   # 19
         'tcp_force',      # 20 ~ 22
@@ -304,6 +340,7 @@ class TrainConfig(DefaultTrainingConfig):
     buffer_period = 1000
     encoder_type = "resnet-pretrained"
     use_proprio = False
+    hz = 10
 
     def get_environment(self, fake_env=False, save_video=False, classifier=False):
         
@@ -317,7 +354,11 @@ class TrainConfig(DefaultTrainingConfig):
             "right_wrist_cam", 
             **RightEnvConfig.CAMERAS["wrist_cam"]
         )
-        cameras = OrderedDict(head_cam=head_cam, wrist_cam=right_wrist_cam)
+        front_cam = USBCapture(
+            "front_cam", 
+            **RightEnvConfig.CAMERAS["front_cam"]
+        )
+        cameras = OrderedDict(head_cam=head_cam, wrist_cam=right_wrist_cam, front_cam=front_cam)
 
         # left_wrist_cam = USBCapture(
         #     "left_wrist_cam", 
@@ -328,8 +369,9 @@ class TrainConfig(DefaultTrainingConfig):
         # left_wrist_cam.start()
         head_cam.start()
         right_wrist_cam.start()     
+        front_cam.start()     
         
-        dual_rb3_mujoco_node = DualRb3MujocoNode("", is_sim=False, is_usb_gripper=[False, False])
+        dual_rb3_mujoco_node = DualRb3MujocoNode("", is_sim=False, is_usb_gripper=[False, True])
 
         # Can be Changed by armtype
         if self.arm_type == "dual":
@@ -339,7 +381,7 @@ class TrainConfig(DefaultTrainingConfig):
                 fake_env=fake_env,
                 save_video=save_video,
                 config=RightEnvConfig,
-                hz=10
+                hz=self.hz
             )
             left_env = Rb3UsbPickupInsertionEnv(
                 cameras=cameras,
@@ -347,7 +389,7 @@ class TrainConfig(DefaultTrainingConfig):
                 fake_env=fake_env,
                 save_video=save_video,
                 config=LeftEnvConfig,
-                hz=10
+                hz=self.hz
             )
             env = DualRb3Env(left_env, right_env, display_images=True)
             env = DualSpacemouseIntervention2(env)
@@ -364,7 +406,7 @@ class TrainConfig(DefaultTrainingConfig):
                 fake_env=fake_env,
                 save_video=save_video,
                 config=RightEnvConfig,
-                hz=10
+                hz=self.hz
             )
         elif self.arm_type == "left":
             env = Rb3UsbPickupInsertionEnv(
@@ -373,7 +415,7 @@ class TrainConfig(DefaultTrainingConfig):
                 fake_env=fake_env,
                 save_video=save_video,
                 config=LeftEnvConfig,
-                hz=10
+                hz=self.hz
             )
 
         if self.arm_type != "dual":
@@ -382,6 +424,17 @@ class TrainConfig(DefaultTrainingConfig):
             env = Quat2EulerWrapper(env)
             env = SERLObsWrapper(env, proprio_keys=self.proprio_keys)
             env = ChunkingWrapper(env, obs_horizon=1, act_exec_horizon=None)
+
+        def reward_func(obs):
+            global success_triggered
+            if success_triggered:
+                success_triggered=False
+                return int(1)
+            else:
+                return 0
+
+        env = MultiCameraBinaryRewardClassifierWrapper(env, reward_func)
+
 
         return env
 
@@ -455,5 +508,3 @@ def load_and_apply_config(env_name, arm_type, overrides=None):
             setattr(ConfigClass, 'ABS_POSE_LIMIT_HIGH', getattr(ConfigClass, 'RESET_POSE') + np.array(env_data['xyz_clips'][side]['high']) + np.array(env_data['safety_offsets'][side]['high']))
 
     return TrainConfig()
-
-

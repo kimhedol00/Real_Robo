@@ -1,40 +1,16 @@
-# configs/default.yaml
+# configs/base.yaml
 
 # TrainConfig 클래스에 적용될 기본값
 train:
-  image_keys: ["head_cam", "wrist_cam"]
-  classifier_keys: ["head_cam", "wrist_cam"]
+  image_keys: ["head_cam", "wrist_cam", "front_cam"]
+  classifier_keys: ["head_cam", "wrist_cam", "front_cam"]
   proprio_keys:
     - 'gripper_pose'
     - 'tcp_force'
     - 'tcp_pose'
+    - 'tcp_torque'
+    - 'tcp_vel'
   setup_mode: "single-arm-learned-gripper"
   discount: 0.98
   encoder_type: "resnet-pretrained"
   use_proprio: False
-
-# RightEnvConfig / LeftEnvConfig 클래스에 공통으로 적용될 기본값
-# env:
-#   cameras:
-#     head_cam:
-#       serial_number: "213522254901"
-#       dim: [1280, 720]
-#       exposure: 40000
-#     wrist_cam:
-#       cam_id: "usb-0:5.1.3:1.0"
-#       dim: [640, 480]
-#       strict_device_filter: True
-#   image_crop:
-#     head_cam: "lambda img: np.rot90(img[:, :], 2)"
-#     wrist_cam: "lambda img: np.rot90(img, 2)"
-
-# get_environment 메서드에서 사용할 래퍼 목록 (클래스 이름)
-# wrappers:
-#   - SpacemouseIntervention
-#   - RelativeFrame
-#   - Quat2EulerWrapper
-#   - SERLObsWrapper
-#   - ChunkingWrapper
-
-# 사용할 단일 팔 환경 클래스의 전체 경로
-# env_class: "experiments.cleanup_table_one_arm.wrapper.Rb3UsbPickupInsertionEnv"
